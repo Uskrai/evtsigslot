@@ -48,7 +48,8 @@ class Group {
     slot_vec_.push_back(std::move(slot));
   }
 
-  std::vector<std::shared_ptr<Slot<Emitted>>>& Get() { return slot_vec_; }
+  vector_type& Get() { return slot_vec_; }
+  const vector_type& Get() const { return slot_vec_; }
 
   void RemoveSlot(void* slot) {
     auto it =

@@ -92,8 +92,21 @@ class SlotClass : public Slot<Emitted> {
   virtual Class GetClassPtr() { return class_ptr_; }
   virtual func_ptr GetCallable() { return get_function_ptr(callable_); }
 
+  static constexpr bool is_emit_void = std::is_same_v<Emitted, void>;
+  static constexpr bool is_callable_without_event =
+      trait::is_callable_v<trait::typelist<Emitted>, Callable, Class>;
+
   virtual void DoCall(event_type& val) override {
-    (GetClassPtr()->*callable_)(val);
+    if constexpr (!is_callable_without_event && !is_emit_void) {
+      (GetClassPtr()->*callable_)(val);
+    } else {
+      if constexpr (!is_emit_void) {
+        (GetClassPtr()->*callable_)(val.Get());
+      } else {
+        (GetClassPtr()->*callable_)(val);
+      }
+      val.Skip();
+    }
   }
 
   virtual bool HasObject(const void* obj) override { return obj == class_ptr_; }
@@ -110,7 +123,24 @@ class SlotFunc : public Slot<Emitted> {
   using typename Slot<Emitted>::event_type;
   using typename Slot<Emitted>::value_type;
 
-  virtual void DoCall(event_type& val) override { callable_(val); }
+  static constexpr bool is_emit_void = std::is_same_v<Emitted, void>;
+  static constexpr bool is_callable_without_arg =
+      trait::is_callable_v<trait::typelist<>, Callable>;
+  static constexpr bool is_callable_without_event =
+      trait::is_callable_v<trait::typelist<Emitted>, Callable>;
+
+  virtual void DoCall(event_type& val) override {
+    if constexpr (!is_callable_without_event && !is_callable_without_arg) {
+      callable_(val);
+    } else {
+      if constexpr (!is_emit_void) {
+        callable_(val.Get());
+      } else {
+        callable_();
+      }
+      val.Skip();
+    }
+  }
 
   virtual func_ptr GetCallable() override {
     return get_function_ptr(callable_);
@@ -119,33 +149,11 @@ class SlotFunc : public Slot<Emitted> {
   virtual bool HasObject(const void* obj) override { return false; }
 };
 
-template <typename Parent>
-class SlotSkippedEvent : public Parent {
- private:
-  using Parent::Parent;
-  using typename Parent::event_type;
-  virtual void DoCall(event_type& val) override {
-    Parent::DoCall(val);
-    val.Skip();
-  }
-
-  // using Parent::DoCallByValue;
-};
-
 template <typename Callable, typename Class, typename... Emitted>
 constexpr std::shared_ptr<Slot<Emitted...>> MakeSlot(Cleanable& cleanable,
                                                      Callable&& callable,
                                                      Class class_ptr) {
-  using MainSlot = SlotClass<Callable, Class, Emitted...>;
-  using SkippedEventSlot = SlotSkippedEvent<MainSlot>;
-
-  // check if the function taking Emitted or Event<Emitted>
-  constexpr bool is_skip_event =
-      trait::is_callable_v<trait::typelist<Emitted...>, Callable, Class>;
-
-  using SlotType =
-      std::conditional_t<is_skip_event, SkippedEventSlot, MainSlot>;
-
+  using SlotType = SlotClass<Callable, Class, Emitted...>;
   return std::make_shared<SlotType>(cleanable, std::forward<Callable>(callable),
                                     class_ptr);
 }
@@ -160,26 +168,10 @@ constexpr std::shared_ptr<Slot<Emitted...>> MakeSlot(Cleanable& cleanable,
 template <typename Callable, typename... Emitted>
 constexpr std::shared_ptr<Slot<Emitted...>> MakeSlot(Cleanable& cleanable,
                                                      Callable&& callable) {
-  using MainSlot = SlotFunc<Callable, Emitted...>;
-  using SkippedEventSlot = SlotSkippedEvent<MainSlot>;
-
-  // check if the function taking Emitted or Event<Emitted>
-  constexpr bool is_skip_event =
-      trait::is_callable_v<trait::typelist<Emitted...>, Callable>;
-
-  using SlotType =
-      std::conditional_t<is_skip_event, SkippedEventSlot, MainSlot>;
-
+  using SlotType = SlotFunc<Callable, Emitted...>;
   return std::make_shared<SlotType>(cleanable,
                                     std::forward<Callable>(callable));
 }
-
-// using is_slotable_v =
-// std::conditional <
-// typename trait::detail::is_callable<trait::typelist<Emitted>,
-// Callable>::value_type ||
-// trait::detail::is_callable<trait::typelist<Event<Emitted>>,
-// Callable::value_type>;
 
 }  // namespace evtsigslot
 

@@ -37,14 +37,12 @@
 
 namespace evtsigslot {
 
-template <typename Emitted>
+template <typename Emitted = void>
 class Signal : Cleanable {
  protected:
-  Group<Emitted> group_;
-  std::mutex mutex_;
-  std::queue<Event<Emitted>> queue_event_;
-
-  using locker_type = std::scoped_lock<std::mutex>;
+  using Lockable = std::mutex;
+  using list_type = Group<Emitted>;
+  using arg_list = trait::typelist<Event<Emitted>&>;
 
   template <typename L>
   using is_thread_safe = std::integral_constant<bool, true>;
@@ -54,13 +52,18 @@ class Signal : Cleanable {
       std::conditional_t<is_thread_safe<L>::value, detail::CopyOnWrite<U>, U>;
 
   template <typename U, typename L>
-  using cow_copy_type =
-      std::conditional_t<is_thread_safe<L>::value, detail::CopyOnWrite<U>, U>;
+  using cow_copy_type = std::conditional_t<is_thread_safe<L>::value,
+                                           detail::CopyOnWrite<U>, const U&>;
 
-  using list_type = typename Group<Emitted>::vector_type;
-  using arg_list = trait::typelist<Event<Emitted>&>;
+  cow_type<list_type, Lockable> group_;
+  std::mutex mutex_;
+  std::queue<Event<Emitted>> queue_event_;
+  Lockable slot_mutex_;
+  std::atomic_bool block_;
 
-  using Lockable = std::mutex;
+  using locker_type = std::scoped_lock<std::mutex>;
+
+  static constexpr bool is_emit_void = std::is_same_v<Emitted, void>;
 
  public:
   Signal() : block_(false) {}
@@ -79,8 +82,13 @@ class Signal : Cleanable {
     block_.store(m.block_.exchange(block_.load()));
   }
 
+  template <typename... Caller>
+  static constexpr bool is_callable_v =
+      trait::is_callable_v<arg_list, Caller...> ||
+      (is_emit_void && trait::is_callable_v<trait::typelist<>, Caller...>);
+
   template <typename Callable, typename Class>
-  std::enable_if_t<trait::is_callable_v<arg_list, Callable, Class> &&
+  std::enable_if_t<is_callable_v<Callable, Class> &&
                        !trait::is_observer_v<Class> &&
                        !trait::is_weak_ptr_compatible_v<Class>,
                    Binding>
@@ -89,17 +97,16 @@ class Signal : Cleanable {
         *this, std::forward<Callable>(callable),
         std::forward<Class>(class_ptr));
     Binding bind(slot);
-    group_.AddSlot(std::move(slot));
+    detail::CowWrite(group_).AddSlot(std::move(slot));
     return bind;
   }
 
   template <typename Callable>
-  std::enable_if_t<trait::is_callable_v<arg_list, Callable>, Binding> Bind(
-      Callable&& callable) {
+  std::enable_if_t<is_callable_v<Callable>, Binding> Bind(Callable&& callable) {
     auto slot =
         MakeSlot<Callable, Emitted>(*this, std::forward<Callable>(callable));
     Binding bind(slot);
-    group_.AddSlot(std::move(slot));
+    detail::CowWrite(group_).AddSlot(std::move(slot));
     return bind;
   }
 
@@ -157,12 +164,15 @@ class Signal : Cleanable {
   }
 
   void UnbindAll() {
-    while (group_.Size() != 0) group_.GetVector().pop_back();
+    locker_type locker(mutex_);
+    detail::CowWrite(group_).Get().clear();
   }
 
   template <typename... T>
   using emit_void_return =
-      std::enable_if_t<std::is_constructible_v<Emitted, T...>, void>;
+      std::enable_if_t<std::is_constructible_v<Emitted, T...> ||
+                           std::is_same_v<Emitted, void>,
+                       void>;
 
   template <typename... T>
   emit_void_return<T...> Emit(T&&... val) {
@@ -170,7 +180,9 @@ class Signal : Cleanable {
 
     Event<Emitted> event(std::forward<T>(val)...);
 
-    for (auto it : group_.Get()) {
+    cow_copy_type<list_type, Lockable> ref = SlotReference();
+
+    for (const auto& it : detail::CowRead(ref).Get()) {
       it->operator()(event);
       if (!event.IsSkipped()) break;
       event.Skip(false);
@@ -185,7 +197,10 @@ class Signal : Cleanable {
   void Block() noexcept { block_.store(true); }
   void Unblock() noexcept { block_.store(false); }
 
-  size_t CountSlot() const { return group_.Size(); }
+  size_t CountSlot() noexcept {
+    auto ref = SlotReference();
+    return detail::CowRead(ref).Size();
+  }
 
  private:
   inline cow_copy_type<list_type, Lockable> SlotReference() {
@@ -196,12 +211,12 @@ class Signal : Cleanable {
   template <typename Cond>
   size_t DoUnbindIf(Cond func) {
     locker_type locker(slot_mutex_);
-    auto& vec = group_.GetVector();
+    auto& ref = detail::CowWrite(group_);
     size_t idx = 0, count = 0;
 
-    while (idx < vec.size()) {
-      if (func(vec[idx])) {
-        group_.RemoveSlot(vec[idx].get());
+    while (idx < detail::CowRead(ref).Get().size()) {
+      if (func(detail::CowRead(ref).Get()[idx])) {
+        detail::CowWrite(ref).RemoveSlot(detail::CowRead(ref).Get()[idx].get());
         ++count;
       } else
         ++idx;
@@ -211,12 +226,17 @@ class Signal : Cleanable {
   }
 
   void Clean(detail::SlotState* state) override {
-    locker_type locker(slot_mutex_);
-    group_.RemoveSlot(state);
-  }
+    locker_type locker(mutex_);
 
-  Lockable slot_mutex_;
-  std::atomic_bool block_;
+    static int i = 0;
+    auto& write = detail::CowWrite(group_);
+    for (auto it = write.Get().begin(); it != write.Get().end(); ++it) {
+      if ((*it).get() == state) {
+        write.Get().erase(it);
+        return;
+      }
+    }
+  }
 };
 
 }  // namespace evtsigslot

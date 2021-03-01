@@ -26,23 +26,16 @@
 #define FMR_EVTSIGSLOT_EVENT
 
 #include <utility>
+#include <variant>
 
 namespace evtsigslot {
 
-template <typename Emitted>
-class Event {
-  Emitted val_;
-  bool is_skipped_ = false, vetoed_ = false;
+namespace internal {
+class EmptyEvent {
+  bool is_skipped_, vetoed_;
 
  public:
-  template <typename... U>
-  explicit Event(U&&... val) : val_(std::forward<U>(val)...) {}
-
-  Emitted& Get() { return val_; }
-  const Emitted& Get() const { return val_; }
-
-  operator Emitted&() { return val_; }
-  operator const Emitted&() const { return val_; }
+  EmptyEvent() : is_skipped_(false), vetoed_(false){};
 
   void Skip(bool skip = true) { is_skipped_ = skip; }
   bool IsSkipped() const { return is_skipped_; }
@@ -50,7 +43,43 @@ class Event {
   void Veto() { vetoed_ = true; }
   bool IsAllowed() const { return vetoed_; }
 };
+//
+}  // namespace internal
+
+template <typename Emitted>
+class Event : public internal::EmptyEvent {
+  Emitted val_;
+
+ public:
+  template <typename... U>
+  explicit Event(U&&... val) : val_(std::forward<U>(val)...) {}
+
+  Emitted& dGet() { return val_; }
+  const Emitted& Get() const { return val_; }
+
+  operator Emitted&() { return val_; }
+  operator const Emitted&() const { return val_; }
+};
+
+template <>
+class Event<void> : public internal::EmptyEvent {};
 
 }  // namespace evtsigslot
+
+namespace std {
+
+// template <std::size_t I, class... Types>
+// constexpr std::variant_alternative_t<I, std::variant<Types...>>& get(
+// evtsigslot::Event<Types...>& v) {
+// return std::get<I>(std::forward<Types...>(v.Get()));
+// };
+//
+// template <std::size_t I, class... Types>
+// constexpr std::variant_alternative_t<I, std::variant<Types...>>&& get(
+// evtsigslot::Event<Types...>&& v) {
+// return std::get<I>(std::tuple<Types...>(std::forward<Types...>(v.Get())));
+// }
+
+}  // namespace std
 
 #endif /* end of include guard: FMR_EVTSIGSLOT_EVENT */

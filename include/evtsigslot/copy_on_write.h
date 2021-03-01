@@ -59,7 +59,7 @@ class CopyOnWrite {
       : data_(new Payload(std::forward<U>(u))) {}
 
   CopyOnWrite(const CopyOnWrite& oth) noexcept : data_(oth.data_) {
-    ++data_->value_;
+    ++data_->count_;
   }
 
   CopyOnWrite(CopyOnWrite&& mv) noexcept : data_(mv.data_) {
@@ -85,7 +85,7 @@ class CopyOnWrite {
     return *this;
   }
 
-  value_type& write() {
+  value_type& Write() {
     if (!IsUnique()) {
       *this = CopyOnWrite(Read());
     }

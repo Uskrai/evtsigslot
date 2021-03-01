@@ -145,7 +145,6 @@ static void test_threaded_misc() {
 }
 
 int main() {
-  int i = 0;
   test_threaded_emission();
   test_threaded_mix();
   test_threaded_crossed();

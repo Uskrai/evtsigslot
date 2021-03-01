@@ -65,35 +65,117 @@ class Signal : Cleanable {
   };
 
   using list_type = std::list<group_type>;
-  using arg_list = trait::typelist<Event<Emitted>&>;
+  using event_type = Event<Emitted>;
+  using event_ptr = std::unique_ptr<event_type>;
+  using arg_list = trait::typelist<event_type&>;
   cow_type<std::list<group_type>, Lockable> slot_list_;
 
-  std::queue<Event<Emitted>> queue_event_;
+  std::queue<event_ptr> queue_event_;
   Lockable slot_mutex_, queue_mutex_;
-  std::atomic_bool block_, handling_;
+  std::atomic_bool block_;
+
+  inline static size_t default_handler_limit_ = 1;
+  size_t handler_limit_ = default_handler_limit_;
+  std::atomic_size_t handler_;
 
   using locker_type = std::scoped_lock<std::mutex>;
 
   static constexpr bool is_emit_void = std::is_same_v<Emitted, void>;
 
  public:
-  Signal() : block_(false), handling_(false) {}
+  Signal() : block_(false), handler_(0) {}
   Signal(const Signal&) = delete;
   Signal& operator=(const Signal&) = delete;
 
   Signal(Signal&& m) : block_(m.block_.load()) {
     locker_type lock(m.slot_mutex_);
-    handling_.store(m.handling_.load());
+    handler_.exchange(m.handler_.load());
     std::swap(slot_list_, m.slot_list_);
   }
 
   ~Signal() { UnbindAll(); }
 
   Signal& operator=(Signal&& m) {
-    locker_type lock1(slot_mutex_, m.slot_mutex_);
+    locker_type lock(slot_mutex_, m.slot_mutex_);
 
+    handler_.exchange(m.handler_.load());
     swap(slot_list_, m.slot_list_);
     block_.store(m.block_.exchange(block_.load()));
+  }
+
+  /**
+   * @brief: Alias for Emit compatible argument
+   * @param: Callable and object
+   */
+  template <typename... T>
+  using emit_void_return =
+      std::enable_if_t<std::is_constructible_v<Emitted, T...> ||
+                           std::is_same_v<Emitted, void>,
+                       void>;
+
+  template <typename... T>
+  emit_void_return<T...> Emit(T&&... val) {
+    if (block_) return;
+
+    {
+      locker_type queue_locker(queue_mutex_);
+      queue_event_.emplace(
+          std::make_unique<event_type>(std::forward<T>(val)...));
+    }
+
+    ProcessEvent();
+  }
+
+  template <typename... T>
+  emit_void_return<T...> PostEvent(T&&... t) {
+    PostEvent(std::forward<T>(t)...);
+  }
+
+  void PostEvent(event_type& event) {
+    cow_copy_type<list_type, Lockable> ref = SlotReference();
+
+    for (const auto& group : detail::CowRead(ref)) {
+      for (const auto& slot : group.list) {
+        event.Skip(false);
+        slot->operator()(event);
+        if (!event.IsSkipped()) break;
+      }
+    }
+  }
+
+  template <typename... T>
+  emit_void_return<T...> operator()(T&&... val) {
+    Emit(std::forward<T>(val)...);
+  }
+
+  void ProcessEvent(bool force = false) {
+    {
+      if (!force && handler_.load() < handler_limit_)
+        handler_.store(handler_ + 1);
+      else
+        return;
+    }
+
+    struct handler_decrement {
+      std::atomic_size_t& atom_;
+      bool decrement_;
+      handler_decrement(std::atomic_size_t& atom, bool should_decrement)
+          : atom_(atom), decrement_(should_decrement) {}
+      ~handler_decrement() { atom_.store(atom_.load() - 1); }
+    };
+
+    handler_decrement decrement(handler_, !force);
+
+    while (true) {
+      std::unique_ptr<Event<Emitted>> event;
+      {
+        locker_type queue_locker(queue_mutex_);
+        if (queue_event_.empty()) break;
+        event = std::move(queue_event_.front());
+        queue_event_.pop();
+      }
+      PostEvent(*event);
+    }
   }
 
   template <typename... Caller>
@@ -180,63 +262,6 @@ class Signal : Cleanable {
   void UnbindAll() {
     locker_type locker(slot_mutex_);
     detail::CowWrite(slot_list_).clear();
-  }
-
-  template <typename... T>
-  using emit_void_return =
-      std::enable_if_t<std::is_constructible_v<Emitted, T...> ||
-                           std::is_same_v<Emitted, void>,
-                       void>;
-  template <typename... T>
-  emit_void_return<T...> Emit(T&&... val) {
-    if (block_) return;
-
-    struct atomic_setter {
-      std::atomic_bool& atom_;
-      bool val_;
-      atomic_setter(std::atomic_bool& atom, bool val)
-          : atom_(atom), val_(val) {}
-      ~atomic_setter() { atom_.store(val_); }
-    };
-
-    {
-      locker_type queue_locker(queue_mutex_);
-      queue_event_.emplace(std::forward<T>(val)...);
-
-      if (!handling_.load()) {
-        handling_.store(true);
-      } else
-        return;
-    }
-
-    atomic_setter handling_setter(handling_, false);
-
-    size_t idx = 0;
-    while (true) {
-      cow_copy_type<list_type, Lockable> ref = SlotReference();
-      auto& read = detail::CowRead(ref);
-
-      auto& event = queue_event_.front();
-      for (const auto& group : read) {
-        for (const auto& slot : group.list) {
-          event.Skip(false);
-          slot->operator()(event);
-          if (!event.IsSkipped()) break;
-        }
-      }
-
-      locker_type queue_locker(queue_mutex_);
-      queue_event_.pop();
-
-      if (queue_event_.empty()) {
-        break;
-      }
-    }
-  }
-
-  template <typename... T>
-  emit_void_return<T...> operator()(T&&... val) {
-    Emit(std::forward<T>(val)...);
   }
 
   void Block() noexcept { block_.store(true); }

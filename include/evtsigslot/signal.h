@@ -114,7 +114,7 @@ class Signal : Cleanable {
                        void>;
 
   template <typename... T>
-  emit_void_return<T...> Emit(T&&... val) {
+  emit_void_return<T...> Queue(T&&... val) {
     if (block_) return;
 
     {
@@ -145,7 +145,7 @@ class Signal : Cleanable {
 
   template <typename... T>
   emit_void_return<T...> operator()(T&&... val) {
-    Emit(std::forward<T>(val)...);
+    Queue(std::forward<T>(val)...);
   }
 
   void ProcessEvent(bool force = false) {

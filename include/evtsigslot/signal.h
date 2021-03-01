@@ -31,6 +31,8 @@
 #include <evtsigslot/group.h>
 
 #include <atomic>
+#include <list>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <type_traits>
@@ -41,8 +43,6 @@ template <typename Emitted = void>
 class Signal : Cleanable {
  protected:
   using Lockable = std::mutex;
-  using list_type = Group<Emitted>;
-  using arg_list = trait::typelist<Event<Emitted>&>;
 
   template <typename L>
   using is_thread_safe = std::integral_constant<bool, true>;
@@ -55,30 +55,44 @@ class Signal : Cleanable {
   using cow_copy_type = std::conditional_t<is_thread_safe<L>::value,
                                            detail::CopyOnWrite<U>, const U&>;
 
-  cow_type<list_type, Lockable> group_;
-  std::mutex mutex_;
+  using slot_type = Slot<Emitted>;
+  using slot_ptr = std::shared_ptr<slot_type>;
+  using slot_container = std::list<slot_ptr>;
+
+  struct group_type {
+    slot_container list;
+    int id = 0;
+  };
+
+  using list_type = std::list<group_type>;
+  using arg_list = trait::typelist<Event<Emitted>&>;
+  cow_type<std::list<group_type>, Lockable> slot_list_;
+
   std::queue<Event<Emitted>> queue_event_;
-  Lockable slot_mutex_;
-  std::atomic_bool block_;
+  Lockable slot_mutex_, queue_mutex_;
+  std::atomic_bool block_, handling_;
 
   using locker_type = std::scoped_lock<std::mutex>;
 
   static constexpr bool is_emit_void = std::is_same_v<Emitted, void>;
 
  public:
-  Signal() : block_(false) {}
+  Signal() : block_(false), handling_(false) {}
   Signal(const Signal&) = delete;
   Signal& operator=(const Signal&) = delete;
 
   Signal(Signal&& m) : block_(m.block_.load()) {
     locker_type lock(m.slot_mutex_);
-    std::swap(group_, m.group_);
+    handling_.store(m.handling_.load());
+    std::swap(slot_list_, m.slot_list_);
   }
 
-  Signal& operator=(Signal&& m) {
-    locker_type lock(mutex_, m.mutex_);
+  ~Signal() { UnbindAll(); }
 
-    swap(group_, m.group_);
+  Signal& operator=(Signal&& m) {
+    locker_type lock1(slot_mutex_, m.slot_mutex_);
+
+    swap(slot_list_, m.slot_list_);
     block_.store(m.block_.exchange(block_.load()));
   }
 
@@ -97,7 +111,7 @@ class Signal : Cleanable {
         *this, std::forward<Callable>(callable),
         std::forward<Class>(class_ptr));
     Binding bind(slot);
-    detail::CowWrite(group_).AddSlot(std::move(slot));
+    AddSlot(std::move(slot));
     return bind;
   }
 
@@ -106,7 +120,7 @@ class Signal : Cleanable {
     auto slot =
         MakeSlot<Callable, Emitted>(*this, std::forward<Callable>(callable));
     Binding bind(slot);
-    detail::CowWrite(group_).AddSlot(std::move(slot));
+    AddSlot(std::move(slot));
     return bind;
   }
 
@@ -164,8 +178,8 @@ class Signal : Cleanable {
   }
 
   void UnbindAll() {
-    locker_type locker(mutex_);
-    detail::CowWrite(group_).Get().clear();
+    locker_type locker(slot_mutex_);
+    detail::CowWrite(slot_list_).clear();
   }
 
   template <typename... T>
@@ -173,19 +187,50 @@ class Signal : Cleanable {
       std::enable_if_t<std::is_constructible_v<Emitted, T...> ||
                            std::is_same_v<Emitted, void>,
                        void>;
-
   template <typename... T>
   emit_void_return<T...> Emit(T&&... val) {
     if (block_) return;
 
-    Event<Emitted> event(std::forward<T>(val)...);
+    struct atomic_setter {
+      std::atomic_bool& atom_;
+      bool val_;
+      atomic_setter(std::atomic_bool& atom, bool val)
+          : atom_(atom), val_(val) {}
+      ~atomic_setter() { atom_.store(val_); }
+    };
 
-    cow_copy_type<list_type, Lockable> ref = SlotReference();
+    {
+      locker_type queue_locker(queue_mutex_);
+      queue_event_.emplace(std::forward<T>(val)...);
 
-    for (const auto& it : detail::CowRead(ref).Get()) {
-      it->operator()(event);
-      if (!event.IsSkipped()) break;
-      event.Skip(false);
+      if (!handling_.load()) {
+        handling_.store(true);
+      } else
+        return;
+    }
+
+    atomic_setter handling_setter(handling_, false);
+
+    size_t idx = 0;
+    while (true) {
+      cow_copy_type<list_type, Lockable> ref = SlotReference();
+      auto& read = detail::CowRead(ref);
+
+      auto& event = queue_event_.front();
+      for (const auto& group : read) {
+        for (const auto& slot : group.list) {
+          event.Skip(false);
+          slot->operator()(event);
+          if (!event.IsSkipped()) break;
+        }
+      }
+
+      locker_type queue_locker(queue_mutex_);
+      queue_event_.pop();
+
+      if (queue_event_.empty()) {
+        break;
+      }
     }
   }
 
@@ -198,44 +243,82 @@ class Signal : Cleanable {
   void Unblock() noexcept { block_.store(false); }
 
   size_t CountSlot() noexcept {
-    auto ref = SlotReference();
-    return detail::CowRead(ref).Size();
+    cow_copy_type<list_type, Lockable> ref = SlotReference();
+    size_t count = 0;
+    for (const auto& group : detail::CowRead(ref)) {
+      count += group.list.size();
+    }
+    return count;
   }
 
  private:
   inline cow_copy_type<list_type, Lockable> SlotReference() {
     locker_type locker(slot_mutex_);
-    return group_;
+    return slot_list_;
+  }
+
+  void AddSlot(slot_ptr&& slot) {
+    locker_type locker(slot_mutex_);
+
+    auto& group_list = detail::CowWrite(slot_list_);
+
+    typename list_type::iterator it =
+        std::find_if(group_list.begin(), group_list.end(),
+                     [&](auto& it) { return it.id == slot->group_id_; });
+
+    if (it == group_list.end()) {
+      group_type group;
+      group.id = slot->group_id_;
+      group_list.emplace_back(group);
+
+      it = std::find_if(
+          group_list.begin(), group_list.end(),
+          [&](const group_type& it) { return it.id == slot->group_id_; });
+    }
+
+    it->list.push_back(std::move(slot));
   }
 
   template <typename Cond>
   size_t DoUnbindIf(Cond func) {
     locker_type locker(slot_mutex_);
-    auto& ref = detail::CowWrite(group_);
+    auto& ref = detail::CowWrite(slot_list_);
     size_t idx = 0, count = 0;
 
-    while (idx < detail::CowRead(ref).Get().size()) {
-      if (func(detail::CowRead(ref).Get()[idx])) {
-        detail::CowWrite(ref).RemoveSlot(detail::CowRead(ref).Get()[idx].get());
-        ++count;
-      } else
-        ++idx;
+    for (auto group = detail::CowWrite(slot_list_).begin();
+         group != detail::CowWrite(slot_list_).end(); ++group) {
+      auto it = group->list.begin();
+      while (it != group->list.end())
+        if (func(*it)) {
+          it = group->list.erase(it);
+          ++count;
+        } else
+          ++it;
     }
 
     return count;
   }
 
   void Clean(detail::SlotState* state) override {
-    locker_type locker(mutex_);
+    locker_type locker(slot_mutex_);
 
     static int i = 0;
-    auto& write = detail::CowWrite(group_);
-    for (auto it = write.Get().begin(); it != write.Get().end(); ++it) {
-      if ((*it).get() == state) {
-        write.Get().erase(it);
-        return;
+    auto& write = detail::CowWrite(slot_list_);
+    for (auto group = write.begin(); group != write.end(); ++group) {
+      for (auto it = group->list.begin(); it != group->list.end(); ++it) {
+        if (it->get() == state) {
+          group->list.erase(it);
+          return;
+        }
       }
     }
+
+    // for (auto it = write.Get().begin(); it != write.Get().end(); ++it) {
+    // if ((*it).get() == state) {
+    // write.Get().erase(it);
+    // return;
+    // }
+    // }
   }
 };
 

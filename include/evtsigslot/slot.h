@@ -38,6 +38,11 @@ struct Cleanable {
   virtual void Clean(detail::SlotState*) = 0;
 };
 
+namespace internal {
+template <typename TypeList, typename... Caller>
+constexpr bool is_slot_callable_v = trait::is_callable_v<TypeList, Caller...>;
+}
+
 template <typename Emitted>
 class Slot : public detail::SlotState {
  public:
@@ -57,6 +62,8 @@ class Slot : public detail::SlotState {
   virtual func_ptr GetCallable() = 0;
 
   virtual bool HasObject(const void* obj) = 0;
+
+  int group_id_ = 0;
 
   template <typename T>
   bool HasCallable(T&& t) {

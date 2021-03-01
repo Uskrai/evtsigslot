@@ -99,7 +99,7 @@ class CopyOnWrite {
   }
 
  private:
-  bool IsUnique() const noexcept { return data_->count_ == 0; }
+  bool IsUnique() const noexcept { return data_->count_ == 1; }
 };
 
 template <typename T>

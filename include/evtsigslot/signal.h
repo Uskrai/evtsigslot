@@ -304,7 +304,7 @@ class Signal : Cleanable {
           [&](const group_type& it) { return it.id == slot->group_id_; });
     }
 
-    it->list.push_back(std::move(slot));
+    it->list.push_front(std::move(slot));
   }
 
   template <typename Cond>
@@ -340,13 +340,6 @@ class Signal : Cleanable {
         }
       }
     }
-
-    // for (auto it = write.Get().begin(); it != write.Get().end(); ++it) {
-    // if ((*it).get() == state) {
-    // write.Get().erase(it);
-    // return;
-    // }
-    // }
   }
 };
 

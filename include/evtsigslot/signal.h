@@ -150,6 +150,7 @@ class Signal : Cleanable {
 
   void ProcessEvent(bool force = false) {
     {
+      locker_type locker(queue_mutex_);
       if (!force && handler_.load() < handler_limit_)
         handler_.store(handler_ + 1);
       else
@@ -275,6 +276,8 @@ class Signal : Cleanable {
     }
     return count;
   }
+
+  size_t CountQueue() noexcept { return queue_event_.size(); }
 
  private:
   inline cow_copy_type<list_type, Lockable> SlotReference() {

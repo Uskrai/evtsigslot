@@ -100,8 +100,8 @@ class SlotClass : public Slot<Emitted> {
   virtual func_ptr GetCallable() { return get_function_ptr(callable_); }
 
   static constexpr bool is_emit_void = std::is_same_v<Emitted, void>;
-  static constexpr bool is_callable_without_event =
-      trait::is_callable_v<trait::typelist<Emitted>, Callable, Class>;
+  static constexpr bool is_callable_without_event = trait::is_callable_v<
+      trait::typelist<std::add_lvalue_reference_t<Emitted>>, Callable, Class>;
 
   virtual void DoCall(event_type& val) override {
     if constexpr (!is_callable_without_event && !is_emit_void) {
@@ -133,8 +133,8 @@ class SlotFunc : public Slot<Emitted> {
   static constexpr bool is_emit_void = std::is_same_v<Emitted, void>;
   static constexpr bool is_callable_without_arg =
       trait::is_callable_v<trait::typelist<>, Callable>;
-  static constexpr bool is_callable_without_event =
-      trait::is_callable_v<trait::typelist<Emitted>, Callable>;
+  static constexpr bool is_callable_without_event = trait::is_callable_v<
+      trait::typelist<std::add_lvalue_reference_t<Emitted>>, Callable>;
 
   virtual void DoCall(event_type& val) override {
     if constexpr (!is_callable_without_event && !is_callable_without_arg) {

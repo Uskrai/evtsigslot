@@ -54,7 +54,7 @@ class Event : public internal::EmptyEvent {
   template <typename... U>
   explicit Event(U&&... val) : val_(std::forward<U>(val)...) {}
 
-  Emitted& dGet() { return val_; }
+  Emitted& Get() { return val_; }
   const Emitted& Get() const { return val_; }
 
   operator Emitted&() { return val_; }

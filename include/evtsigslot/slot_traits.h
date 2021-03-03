@@ -28,69 +28,126 @@
 
 namespace evtsigslot {
 
-template <typename...>
+using trait::detail::void_t;
+
+enum SlotFlags {
+  kIsCallableWithEvent,
+  kIsCallableWithoutEvent,
+  kIsCallableWithoutArgs
+};
+
+/**
+ * Base for SlotTraits
+ * @param: EmittedList should be type with trait::typelist
+ * @param: Second and/or third should be the Caller
+ */
+template <typename EmittedList, typename, typename = void, typename = void>
 struct slot_traits : std::false_type {};
 
-template <typename Emitted, typename... Caller>
-struct event_traits {
+/**
+ * @brief: SlotTraits Helper class for defining Conditional Value Slot Type
+ */
+template <SlotFlags flags, typename SlotType, typename = void, typename = void>
+struct slot_traits_helper {
+  static constexpr bool is_callable_with_event = flags == kIsCallableWithEvent;
   static constexpr bool is_callable_without_event =
-      trait::is_callable_v<std::add_lvalue_reference<Emitted>>;
-};
-
-template <typename Callable, typename Emitted>
-struct slot_traits<Callable, Emitted> {
-  static constexpr bool is_emit_void = std::is_same_v<void, Emitted>;
-
+      flags == kIsCallableWithoutEvent || flags == kIsCallableWithoutArgs;
   static constexpr bool is_callable_without_args =
-      trait::is_callable_v<trait::typelist<>, Callable>;
+      flags == kIsCallableWithoutArgs;
 
-  static constexpr bool is_callable_without_event =
-      trait::is_slot_callable_v<trait::typelist<Emitted>, Callable> ||
-      is_callable_without_args;
-
-  static constexpr bool is_callable_with_event =
-      !is_callable_without_event &&
-      trait::is_slot_callable_v<trait::typelist<Event<Emitted>>, Callable>;
-
-  static constexpr bool value =
-      !trait::is_pmf_v<Callable> &&
-      (is_callable_with_event || is_callable_without_args ||
-       is_callable_without_event);
-
-  using type =
-      SlotHelper<SlotFunc<Callable, Emitted>, slot_traits<Callable, Emitted>>;
+  static constexpr bool value = true;
+  using type = SlotHelper<SlotType, slot_traits_helper<flags, SlotType>>;
 };
 
-template <typename Callable, typename Class, typename Emitted>
-struct slot_traits<Callable, Class, Emitted> {
-  using slot_raw_pointer = SlotClass<Callable, Class, Emitted>;
-  using slot_weak_pointer = void;
+/**
+ * @brief: SlotTraitCaller Helper for defining New Caller ( Function, Member
+ * Function, Member function of smart pointer )
+ *
+ * @param: EmittedList should be type with trait::typelist
+ * @param: Second and Third should be the Caller
+ */
+template <typename EmittedList, typename, typename = void, typename = void>
+struct slot_traits_caller_helper : std::false_type {};
 
-  static constexpr bool is_raw_pointer = trait::is_pointer_v<Class>;
+/**
+ * @brief: SlotTraitCaller Helper for Checking Event argument
+ */
+template <typename EmittedList, typename... CallerList>
+constexpr bool is_slot_event_callable =
+    trait::is_slot_callable_v<trait::typelist<Event<EmittedList>>,
+                              CallerList...>;
 
-  static constexpr bool is_callable_without_args =
-      trait::is_slot_callable_v<trait::typelist<>, Callable, Class>;
+template <typename EmittedList, typename SlotType, typename... CallerList>
+struct slot_traits_caller_helper<
+    trait::typelist<EmittedList>, SlotType, trait::typelist<CallerList...>,
+    typename std::enable_if<is_slot_event_callable<EmittedList, CallerList...>,
+                            void>::type>
+    : slot_traits_helper<kIsCallableWithEvent, SlotType> {};
 
-  static constexpr bool is_callable_without_event =
-      is_callable_without_args ||
-      trait::is_slot_callable_v<trait::typelist<Emitted>, Callable, Class>;
+/**
+ * @brief: SlotTraitCaller Helper for checking void Argument
+ */
+template <typename Emitted, typename SlotType, typename... CallerList>
+struct slot_traits_caller_helper<
+    Emitted, SlotType, trait::typelist<CallerList...>,
+    typename std::enable_if<
+        trait::is_slot_callable_v<trait::typelist<>, CallerList...>,
+        void>::type> : slot_traits_helper<kIsCallableWithoutArgs, SlotType> {};
 
-  static constexpr bool is_emit_void = std::is_same_v<Emitted, void>;
+template <typename EmittedList, typename SlotType, typename... CallerList>
+struct slot_traits_without_event_helper
+    : slot_traits_helper<
+          kIsCallableWithoutEvent,
+          typename std::enable_if<trait::is_slot_callable_v<
+              trait::typelist<EmittedList>, CallerList...>>::type> {};
 
-  static constexpr bool is_callable_with_event =
-      !is_callable_without_event &&
-      trait::is_slot_callable_v<trait::typelist<Event<Emitted>>, Callable,
-                                Class>;
+/**
+ * @brief: SlotTraitCaller Helper for checking EmittedList argument
+ */
+template <typename EmittedList, typename SlotType, typename... CallerList>
+struct slot_traits_caller_helper<
+    trait::typelist<EmittedList>, SlotType, trait::typelist<CallerList...>,
+    typename std::enable_if_t<
+        !is_slot_event_callable<EmittedList, CallerList...> &&
+            trait::is_slot_callable_v<trait::typelist<EmittedList>,
+                                      CallerList...>,
+        void>> : slot_traits_helper<kIsCallableWithoutEvent, SlotType> {};
 
-  static constexpr bool value =
-      trait::is_pmf_v<Callable> &&
-      (is_callable_with_event || is_callable_without_event ||
-       is_callable_without_args);
+/**
+ * @brief: SltoTrait Helper for Converting Emitted to typelist in
+ * slot_traits_caller_helper
+ */
+template <typename EmittedList, typename SlotType, typename... Caller>
+using slot_traits_caller_helper_lister =
+    slot_traits_caller_helper<trait::typelist<EmittedList>, SlotType,
+                              trait::typelist<Caller...>>;
 
-  using type = SlotHelper<
-      std::conditional_t<is_raw_pointer, slot_raw_pointer, slot_weak_pointer>,
-      slot_traits<Callable, Class, Emitted>>;
-};
+/**
+ * @brief: SlotTraits for Function
+ */
+template <typename Callable, typename EmittedList>
+struct slot_traits<
+    trait::typelist<EmittedList>, Callable,
+    typename std::enable_if<
+        slot_traits_caller_helper_lister<
+            EmittedList, SlotFunc<Callable, EmittedList>, Callable>::value,
+        void>::type>
+    : slot_traits_caller_helper_lister<
+          EmittedList, SlotFunc<Callable, EmittedList>, Callable> {};
+
+/**
+ * @brief: SlotTraits for Member Function
+ */
+template <typename Callable, typename Class, typename EmittedList>
+struct slot_traits<trait::typelist<EmittedList>, Callable, Class,
+                   typename std::enable_if<
+                       slot_traits_caller_helper_lister<
+                           EmittedList, SlotClass<Callable, Class, EmittedList>,
+                           Callable, Class>::value,
+                       void>::type>
+    : slot_traits_caller_helper_lister<EmittedList,
+                                       SlotClass<Callable, Class, EmittedList>,
+                                       Callable, Class> {};
 
 template <typename... U>
 constexpr bool slot_traits_value = slot_traits<U...>::value;

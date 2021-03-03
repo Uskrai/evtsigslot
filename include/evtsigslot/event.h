@@ -57,8 +57,8 @@ class Event : public internal::EmptyEvent {
   Emitted& Get() { return val_; }
   const Emitted& Get() const { return val_; }
 
-  operator Emitted&() { return val_; }
-  operator const Emitted&() const { return val_; }
+  // operator Emitted&() { return val_; }
+  // operator const Emitted&() const { return val_; }
 
   using value_type = Emitted;
 };

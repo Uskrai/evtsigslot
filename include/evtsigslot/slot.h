@@ -103,19 +103,6 @@ class SlotClass : public Slot<Emitted> {
   static constexpr bool is_callable_without_event = trait::is_callable_v<
       trait::typelist<std::add_lvalue_reference_t<Emitted>>, Callable, Class>;
 
-  // virtual void DoCall(event_type& val) override {
-  // if constexpr (!is_callable_without_event && !is_emit_void) {
-  // (GetClassPtr()->*callable_)(val);
-  // } else {
-  // if constexpr (!is_emit_void) {
-  // (GetClassPtr()->*callable_)(val.Get());
-  // } else {
-  // (GetClassPtr()->*callable_)(val);
-  // }
-  // val.Skip();
-  // }
-  // }
-
  protected:
   template <typename... Args>
   void Call(Args&&... args) {
@@ -141,21 +128,6 @@ class SlotFunc : public Slot<Emitted> {
       trait::is_slot_callable_v<trait::typelist<>, Callable>;
   static constexpr bool is_callable_without_event =
       trait::is_slot_callable_v<trait::typelist<Emitted>, Callable>;
-
-  // virtual void DoCall(event_type& val) override {
-  // printf("%d\n", is_callable_without_event);
-  // // if constexpr (!is_callable_without_event && !is_callable_without_arg) {
-  // // callable_(val);
-  // // } else {
-  // if constexpr (!is_emit_void && is_callable_without_event &&
-  // !is_callable_without_arg) {
-  // callable_(val.Get());
-  // } else {
-  // if constexpr (is_callable_without_arg) callable_();
-  // }
-  // val.Skip();
-  // // }
-  // }
 
  protected:
   template <typename... Args>
@@ -183,7 +155,7 @@ class SlotHelper : public SlotHelperClass {
       Base::Call(val);
     } else if constexpr (!Traits::is_callable_with_event) {
       val.Skip();
-      if constexpr (Traits::is_callable_without_args || Traits::is_emit_void) {
+      if constexpr (Traits::is_callable_without_args) {
         Base::Call();
       } else {
         Base::Call(val.Get());

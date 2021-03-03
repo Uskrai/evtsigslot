@@ -180,7 +180,7 @@ class Signal : Cleanable {
     }
   }
   template <typename... Caller>
-  using slot_traits_def = slot_traits<Caller..., Emitted>;
+  using slot_traits_def = slot_traits<trait::typelist<Emitted>, Caller...>;
 
   template <typename... Caller>
   static constexpr bool is_callable_v = slot_traits_def<Caller...>::value;
@@ -247,9 +247,6 @@ class Signal : Cleanable {
   std::enable_if_t<(is_callable_v<Callable> || trait::is_pmf_v<Callable>),
                    size_t>
   Unbind(const Callable& callable) {
-    using c_tr = slot_traits_def<Callable>;
-    printf("Removing Callable %d %d %d\n", c_tr::is_callable_without_args,
-           c_tr::is_callable_without_event, c_tr::is_callable_with_event);
     return DoUnbindIf(
         [&](const auto& it) { return it->HasCallable(callable); });
   }
@@ -283,7 +280,6 @@ class Signal : Cleanable {
                        !trait::is_pmf_v<Class>,
                    size_t>
   Unbind(const Class& class_ptr) {
-    printf("Removing obj\n");
     auto ret =
         DoUnbindIf([&](const auto& it) { return it->HasObject(class_ptr); });
     return ret;

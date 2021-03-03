@@ -29,6 +29,7 @@
 #include <evtsigslot/copy_on_write.h>
 #include <evtsigslot/event.h>
 #include <evtsigslot/group.h>
+#include <evtsigslot/slot_traits.h>
 
 #include <atomic>
 #include <list>
@@ -67,7 +68,7 @@ class Signal : Cleanable {
   using list_type = std::list<group_type>;
   using event_type = Event<Emitted>;
   using event_ptr = std::unique_ptr<event_type>;
-  using arg_list = trait::typelist<event_type&>;
+  using arg_list = event_type&;
   cow_type<std::list<group_type>, Lockable> slot_list_;
 
   std::queue<event_ptr> queue_event_;
@@ -178,20 +179,20 @@ class Signal : Cleanable {
       PostEvent(*event);
     }
   }
+  template <typename... Caller>
+  using slot_traits_def = slot_traits<Caller..., Emitted>;
 
   template <typename... Caller>
-  static constexpr bool is_callable_v =
-      trait::is_callable_v<arg_list, Caller...> ||
-      (is_emit_void && trait::is_callable_v<trait::typelist<>, Caller...>);
+  static constexpr bool is_callable_v = slot_traits_def<Caller...>::value;
+
+  template <typename... Caller>
+  using slot_caller_type = typename slot_traits_def<Caller...>::type;
 
   template <typename Callable, typename Class>
-  std::enable_if_t<is_callable_v<Callable, Class> &&
-                       !trait::is_observer_v<Class> &&
-                       !trait::is_weak_ptr_compatible_v<Class>,
-                   Binding>
-  Bind(Callable&& callable, Class&& class_ptr) {
-    auto slot = MakeSlot<Callable, Class, Emitted>(
-        *this, std::forward<Callable>(callable),
+  std::enable_if_t<is_callable_v<Callable, Class>, Binding> Bind(
+      Callable&& callable, Class&& class_ptr) {
+    auto slot = std::make_shared<slot_caller_type<Callable, Class>>(
+        static_cast<Cleanable&>(*this), std::forward<Callable>(callable),
         std::forward<Class>(class_ptr));
     Binding bind(slot);
     AddSlot(std::move(slot));
@@ -200,12 +201,35 @@ class Signal : Cleanable {
 
   template <typename Callable>
   std::enable_if_t<is_callable_v<Callable>, Binding> Bind(Callable&& callable) {
-    auto slot =
-        MakeSlot<Callable, Emitted>(*this, std::forward<Callable>(callable));
+    auto slot = std::make_shared<slot_caller_type<Callable>>(
+        static_cast<Cleanable&>(*this), std::forward<Callable>(callable));
     Binding bind(slot);
     AddSlot(std::move(slot));
     return bind;
   }
+
+  // template <typename Callable, typename Class>
+  // std::enable_if_t<is_callable_v<Callable, Class> &&
+  // !trait::is_observer_v<Class> &&
+  // !trait::is_weak_ptr_compatible_v<Class>,
+  // Binding>
+  // Bind(Callable&& callable, Class&& class_ptr) {
+  // auto slot = MakeSlot<Callable, Class, Emitted>(
+  // *this, std::forward<Callable>(callable),
+  // std::forward<Class>(class_ptr));
+  // Binding bind(slot);
+  // AddSlot(std::move(slot));
+  // return bind;
+  // }
+  //
+  // template <typename Callable>
+  // std::enable_if_t<is_callable_v<Callable>, Binding> Bind(Callable&&
+  // callable) { auto slot = MakeSlot<Callable, Emitted>(*this,
+  // std::forward<Callable>(callable));
+  // Binding bind(slot);
+  // AddSlot(std::move(slot));
+  // return bind;
+  // }
 
   template <typename... Args>
   ScopedBinding BindScoped(Args&&... args) {
@@ -220,10 +244,12 @@ class Signal : Cleanable {
    * @return: Unbinded slot
    */
   template <typename Callable>
-  std::enable_if_t<trait::is_callable_v<arg_list, Callable> ||
-                       trait::is_pmf_v<Callable>,
+  std::enable_if_t<(is_callable_v<Callable> || trait::is_pmf_v<Callable>),
                    size_t>
   Unbind(const Callable& callable) {
+    using c_tr = slot_traits_def<Callable>;
+    printf("Removing Callable %d %d %d\n", c_tr::is_callable_without_args,
+           c_tr::is_callable_without_event, c_tr::is_callable_with_event);
     return DoUnbindIf(
         [&](const auto& it) { return it->HasCallable(callable); });
   }
@@ -237,8 +263,7 @@ class Signal : Cleanable {
    * @return: Unbind slot
    */
   template <typename Callable, typename Object>
-  std::enable_if_t<trait::is_callable_v<arg_list, Callable, Object> &&
-                       trait::is_pmf_v<Callable> && std::is_pointer_v<Object>,
+  std::enable_if_t<is_callable_v<Callable, Object> || trait::is_pmf_v<Callable>,
                    size_t>
   Unbind(const Callable& callable, const Object& obj) {
     return DoUnbindIf([&](const auto& it) {
@@ -254,10 +279,14 @@ class Signal : Cleanable {
    * @return: Unbinded slot
    */
   template <typename Class>
-  std::enable_if_t<
-      !trait::is_callable_v<arg_list, Class> && !trait::is_pmf_v<Class>, size_t>
+  std::enable_if_t<!is_callable_v<Class> && trait::is_pointer_v<Class> &&
+                       !trait::is_pmf_v<Class>,
+                   size_t>
   Unbind(const Class& class_ptr) {
-    return DoUnbindIf([&](const auto& it) { return it->HasObject(class_ptr); });
+    printf("Removing obj\n");
+    auto ret =
+        DoUnbindIf([&](const auto& it) { return it->HasObject(class_ptr); });
+    return ret;
   }
 
   void UnbindAll() {

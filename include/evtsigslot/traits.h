@@ -22,6 +22,9 @@
  *  IN THE SOFTWARE.
  */
 
+#ifndef EVTSIGSLOT_TRAITS
+#define EVTSIGSLOT_TRAITS
+
 #include <type_traits>
 
 namespace evtsigslot {
@@ -70,6 +73,23 @@ struct is_callable<F, typelist<T...>,
                    void_t<decltype(std::declval<F>()(std::declval<T>()...))>>
     : std::true_type {};
 
+template <typename, typename, typename = void, typename = void>
+struct is_slot_callable : std::false_type {};
+
+template <typename Callable, typename Pointer, typename... T>
+struct is_slot_callable<
+    Callable, Pointer, typelist<T...>,
+    void_t<decltype(((*std::declval<Pointer>()).*std::declval<Callable>())(
+        std::declval<std::add_lvalue_reference_t<T>>()...))>> : std::true_type {
+};
+
+template <typename Callable, typename... T>
+struct is_slot_callable<
+    Callable, typelist<T...>,
+    void_t<decltype(std::declval<Callable>()(
+        std::declval<std::add_lvalue_reference_t<T>>()...))>> : std::true_type {
+};
+
 template <typename T, typename = void>
 struct is_weak_ptr : std::false_type {};
 
@@ -104,6 +124,10 @@ constexpr bool is_weak_ptr_compatible_v =
 template <typename L, typename... T>
 constexpr bool is_callable_v = detail::is_callable<T..., L>::value;
 
+template <typename ListType, typename... Caller>
+constexpr bool is_slot_callable_v =
+    detail::is_slot_callable<Caller..., ListType>::value;
+
 template <typename T>
 constexpr bool is_weak_ptr_v = detail::is_weak_ptr<T>::value;
 
@@ -127,3 +151,4 @@ constexpr bool is_observer_v =
 }  // namespace trait
 
 }  // namespace evtsigslot
+#endif /* end of include guard: EVTSIGSLOT_TRAITS */

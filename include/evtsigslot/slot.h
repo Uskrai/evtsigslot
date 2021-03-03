@@ -103,17 +103,23 @@ class SlotClass : public Slot<Emitted> {
   static constexpr bool is_callable_without_event = trait::is_callable_v<
       trait::typelist<std::add_lvalue_reference_t<Emitted>>, Callable, Class>;
 
-  virtual void DoCall(event_type& val) override {
-    if constexpr (!is_callable_without_event && !is_emit_void) {
-      (GetClassPtr()->*callable_)(val);
-    } else {
-      if constexpr (!is_emit_void) {
-        (GetClassPtr()->*callable_)(val.Get());
-      } else {
-        (GetClassPtr()->*callable_)(val);
-      }
-      val.Skip();
-    }
+  // virtual void DoCall(event_type& val) override {
+  // if constexpr (!is_callable_without_event && !is_emit_void) {
+  // (GetClassPtr()->*callable_)(val);
+  // } else {
+  // if constexpr (!is_emit_void) {
+  // (GetClassPtr()->*callable_)(val.Get());
+  // } else {
+  // (GetClassPtr()->*callable_)(val);
+  // }
+  // val.Skip();
+  // }
+  // }
+
+ protected:
+  template <typename... Args>
+  void Call(Args&&... args) {
+    (GetClassPtr()->*callable_)(std::forward<Args>(args)...);
   }
 
   virtual bool HasObject(const void* obj) override { return obj == class_ptr_; }
@@ -132,21 +138,29 @@ class SlotFunc : public Slot<Emitted> {
 
   static constexpr bool is_emit_void = std::is_same_v<Emitted, void>;
   static constexpr bool is_callable_without_arg =
-      trait::is_callable_v<trait::typelist<>, Callable>;
-  static constexpr bool is_callable_without_event = trait::is_callable_v<
-      trait::typelist<std::add_lvalue_reference_t<Emitted>>, Callable>;
+      trait::is_slot_callable_v<trait::typelist<>, Callable>;
+  static constexpr bool is_callable_without_event =
+      trait::is_slot_callable_v<trait::typelist<Emitted>, Callable>;
 
-  virtual void DoCall(event_type& val) override {
-    if constexpr (!is_callable_without_event && !is_callable_without_arg) {
-      callable_(val);
-    } else {
-      if constexpr (!is_emit_void) {
-        callable_(val.Get());
-      } else {
-        callable_();
-      }
-      val.Skip();
-    }
+  // virtual void DoCall(event_type& val) override {
+  // printf("%d\n", is_callable_without_event);
+  // // if constexpr (!is_callable_without_event && !is_callable_without_arg) {
+  // // callable_(val);
+  // // } else {
+  // if constexpr (!is_emit_void && is_callable_without_event &&
+  // !is_callable_without_arg) {
+  // callable_(val.Get());
+  // } else {
+  // if constexpr (is_callable_without_arg) callable_();
+  // }
+  // val.Skip();
+  // // }
+  // }
+
+ protected:
+  template <typename... Args>
+  void Call(Args&&... args) {
+    callable_(std::forward<Args>(args)...);
   }
 
   virtual func_ptr GetCallable() override {
@@ -154,6 +168,28 @@ class SlotFunc : public Slot<Emitted> {
   }
 
   virtual bool HasObject(const void* obj) override { return false; }
+};
+
+template <typename SlotHelperClass, typename Traits>
+class SlotHelper : public SlotHelperClass {
+ public:
+  using Base = SlotHelperClass;
+  using Base::Base;
+  using typename Base::event_type;
+
+ protected:
+  virtual void DoCall(event_type& val) override {
+    if constexpr (Traits::is_callable_with_event) {
+      Base::Call(val);
+    } else if constexpr (!Traits::is_callable_with_event) {
+      val.Skip();
+      if constexpr (Traits::is_callable_without_args || Traits::is_emit_void) {
+        Base::Call();
+      } else {
+        Base::Call(val.Get());
+      }
+    }
+  }
 };
 
 template <typename Callable, typename Class, typename... Emitted>

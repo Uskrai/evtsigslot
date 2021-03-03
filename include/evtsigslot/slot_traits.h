@@ -85,33 +85,49 @@ struct slot_traits_caller_helper<
     : slot_traits_helper<kIsCallableWithEvent, SlotType> {};
 
 /**
- * @brief: SlotTraitCaller Helper for checking void Argument
+ * @brief: Base for SlotTraitsHelper without event argument
  */
-template <typename Emitted, typename SlotType, typename... CallerList>
-struct slot_traits_caller_helper<
-    Emitted, SlotType, trait::typelist<CallerList...>,
-    typename std::enable_if<
-        trait::is_slot_callable_v<trait::typelist<>, CallerList...>,
-        void>::type> : slot_traits_helper<kIsCallableWithoutArgs, SlotType> {};
-
-template <typename EmittedList, typename SlotType, typename... CallerList>
-struct slot_traits_without_event_helper
-    : slot_traits_helper<
-          kIsCallableWithoutEvent,
-          typename std::enable_if<trait::is_slot_callable_v<
-              trait::typelist<EmittedList>, CallerList...>>::type> {};
+template <typename EmittedList, typename SlotType, typename = void,
+          typename = void, typename = void>
+struct slot_traits_caller_without_event_helper : std::false_type {};
 
 /**
- * @brief: SlotTraitCaller Helper for checking EmittedList argument
+ * @brief: Helper class for choosing Traits without event so it doesn't conflict
+ * with event in deducing context like auto lambda
  */
 template <typename EmittedList, typename SlotType, typename... CallerList>
 struct slot_traits_caller_helper<
     trait::typelist<EmittedList>, SlotType, trait::typelist<CallerList...>,
-    typename std::enable_if_t<
-        !is_slot_event_callable<EmittedList, CallerList...> &&
-            trait::is_slot_callable_v<trait::typelist<EmittedList>,
-                                      CallerList...>,
-        void>> : slot_traits_helper<kIsCallableWithoutEvent, SlotType> {};
+    typename std::enable_if<!is_slot_event_callable<EmittedList, CallerList...>,
+                            void>::type>
+    : slot_traits_caller_without_event_helper<trait::typelist<EmittedList>,
+                                              SlotType,
+                                              trait::typelist<CallerList...>> {
+};
+
+/**
+ * @brief: SlotTraitCaller Helper for checking function without event
+ */
+template <typename EmittedList, typename SlotType, typename... CallerList>
+struct slot_traits_caller_without_event_helper<
+    trait::typelist<EmittedList>, SlotType, trait::typelist<CallerList...>,
+    typename std::enable_if<
+        trait::is_slot_callable_v<trait::typelist<EmittedList>, CallerList...>,
+        void>::type> : slot_traits_helper<kIsCallableWithoutEvent, SlotType> {};
+
+/**
+ * @brief: SlotTraitCaller Helper for checking function without argument
+ *
+ * @param:
+ *
+ * @return: SlotTraitCaller Helper for checking function without argument
+ */
+template <typename EmittedList, typename SlotType, typename... CallerList>
+struct slot_traits_caller_without_event_helper<
+    trait::typelist<EmittedList>, SlotType, trait::typelist<CallerList...>,
+    typename std::enable_if<
+        trait::is_slot_callable_v<trait::typelist<>, CallerList...>,
+        void>::type> : slot_traits_helper<kIsCallableWithoutArgs, SlotType> {};
 
 /**
  * @brief: SltoTrait Helper for Converting Emitted to typelist in
